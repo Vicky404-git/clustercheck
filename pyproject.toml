@@ -1,0 +1,13 @@
+[project]
+name = "mini-cluster"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.141.1",
+    "pydantic>=2.13.4",
+    "requests>=2.34.2",
+    "torch>=2.13.0",
+    "uvicorn>=0.52.4",
+]
