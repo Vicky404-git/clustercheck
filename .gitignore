@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+cloud_monitor.db
+
+# local archives / separate mini-project (own git repo, 4.5GB with torch venv)
+*.rar
+tp/
