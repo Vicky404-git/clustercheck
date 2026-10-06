@@ -1,6 +1,6 @@
 """Data ingestion layer (Person B).
 
-Four interchangeable sources, all returning the same series shape:
+Five interchangeable sources, all returning the same series shape:
 
     {"timestamp": datetime, "value": float}
 
@@ -8,10 +8,12 @@ Four interchangeable sources, all returning the same series shape:
 - remote : HTTP polling of another machine running backend.ingestion.agent
 - aws    : CloudWatch metrics via boto3
 - demo   : deterministic fake data (see demo_data.py)
+- kaggle : vmCloud_data.csv from the Kaggle dataset (see kaggle.py)
 """
 
 from .aws_ingestion import AWS_METRIC_NAMES, fetch_metric, list_instances
 from .demo_data import DEMO_METRICS, get_demo_metrics
+from .kaggle import DEFAULT_CSV_PATH, KAGGLE_METRICS, fetch_kaggle_series
 from .local_pc import (
     BASE_METRICS,
     available_local_metrics,
@@ -21,13 +23,14 @@ from .local_pc import (
     snapshot_local_metrics,
 )
 
-SOURCES = ["local", "aws", "demo", "remote"]
+SOURCES = ["local", "aws", "demo", "remote", "kaggle"]
 
 METRIC_LABELS = {
     "cpu": "CPU Utilization (%)",
     "ram": "Memory Usage (%)",
     "disk": "Disk Usage (%)",
     "gpu": "GPU Utilization (%)",
+    "network": "Network Traffic",
     "network_in": "Network In (bytes/sec)",
     "network_out": "Network Out (bytes/sec)",
     "CPUUtilization": "CPUUtilization (%)",
@@ -52,6 +55,8 @@ def list_metrics(source: str) -> list:
         return available_local_metrics()
     if source == "remote":
         return list(BASE_METRICS)
+    if source == "kaggle":
+        return list(KAGGLE_METRICS)
     raise ValueError(f"Unknown source: {source}")
 
 
@@ -76,6 +81,13 @@ def fetch_series(source: str, metric: str, **opts) -> list:
             seed=int(opts.get("seed", 42)),
         )
         return _pick(data, source, metric)
+
+    if source == "kaggle":
+        return fetch_kaggle_series(
+            csv_path=opts.get("csv_path", DEFAULT_CSV_PATH),
+            metric=metric,
+            limit=int(opts.get("limit", 100)),
+        )
 
     if source == "local":
         data = collect_local_metrics(

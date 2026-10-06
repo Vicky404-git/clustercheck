@@ -10,7 +10,7 @@ a local **SQLite** database. UI is **Streamlit**, plus a pure-CLI `debug.py`.
 | Part | Owner | Files |
 |------|-------|-------|
 | UI / CLI | Person A | `app.py` (Streamlit), `debug.py` (CLI) |
-| Data ingestion | Person B | `backend/ingestion/` - `local_pc.py` (psutil + GPUtil), `agent.py` (HTTP agent), `aws_ingestion.py` (boto3), `demo_data.py` |
+| Data ingestion | Person B | `backend/ingestion/` - `local_pc.py` (psutil + GPUtil), `agent.py` (HTTP agent), `aws_ingestion.py` (boto3), `demo_data.py`, `kaggle.py` (Kaggle CSV) |
 | ML engine + DB | Person C | `backend/ml/` - `anomaly.py`, `predictor.py`; `backend/storage/database.py` |
 
 ```
@@ -22,7 +22,8 @@ a local **SQLite** database. UI is **Streamlit**, plus a pure-CLI `debug.py`.
 │   │   ├── local_pc.py        # psutil: CPU, RAM, Disk, Network, GPU (GPUtil)
 │   │   ├── agent.py           # HTTP endpoint to expose a PC to the network
 │   │   ├── aws_ingestion.py   # boto3 CloudWatch (plug credentials later)
-│   │   └── demo_data.py       # spiky CPU, leaking RAM, bursty network
+│   │   ├── demo_data.py       # spiky CPU, leaking RAM, bursty network
+│   │   └── kaggle.py          # vmCloud_data.csv reader (CPU/RAM/Network)
 │   ├── ml/                    # Person C
 │   │   ├── anomaly.py         # Isolation Forest (in-memory, no joblib)
 │   │   └── predictor.py       # linear regression -> time until 90%
@@ -59,7 +60,8 @@ uv export --no-hashes --no-emit-project -o requirements.txt
 ```
 
 Open http://localhost:8501, pick a **Data Source** (Local PC / AWS (Live) /
-Demo / Remote PC (HTTP)), a metric, then **Fetch & Analyze**.
+Demo / Kaggle Dataset (CSV) / Remote PC (HTTP)), a metric, then
+**Fetch & Analyze**.
 
 ## Data sources
 
@@ -88,6 +90,14 @@ variables. IAM needs `cloudwatch:GetMetricStatistics` (and
 - RAM: slow upward leak
 - Network In/Out: bursty, mostly quiet with sudden multipliers
 
+**Kaggle Dataset (CSV)** - `backend/ingestion/kaggle.py` reads the Kaggle
+*VM Workload* dataset (`vmCloud_data.csv`, ~2M rows, gitignored) from the
+project root. Metrics map to `cpu_usage`, `memory_usage` and
+`network_traffic`; timestamps are parsed, null values and bad rows are
+dropped, then the rows are sorted chronologically and the most recent N are
+returned (the sidebar sets the row count, default 100). The file can also be
+placed anywhere - the sidebar takes a custom CSV path.
+
 ## ML
 
 - **Anomaly detection** (`backend/ml/anomaly.py`): Isolation Forest trained
@@ -105,7 +115,8 @@ python debug.py local --duration 10              # psutil snapshot + series
 python debug.py remote --host 192.168.1.50       # poll a friend's PC
 python debug.py aws --instance i-0123456789abcdef0
 python debug.py demo --metric cpu --hours 6
-python debug.py anomaly --source demo --metric cpu --save
+python debug.py kaggle --metric cpu --limit 100   # read vmCloud_data.csv
+python debug.py anomaly --source kaggle --metric cpu --save
 python debug.py predict --source demo --metric ram
 python debug.py db-test                          # insert + read back
 python debug.py db-show --limit 10

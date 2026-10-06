@@ -8,7 +8,9 @@ Lets you exercise every layer from the terminal without opening Streamlit:
     python debug.py remote --host 192.168.1.50 --port 8777
     python debug.py aws --instance i-0123456789abcdef0 --metric CPUUtilization
     python debug.py demo --metric ram --hours 6
+    python debug.py kaggle --metric cpu --limit 100
     python debug.py anomaly --source demo --metric cpu
+    python debug.py anomaly --source kaggle --metric ram
     python debug.py predict --source demo --metric ram
     python debug.py db-test
     python debug.py db-show
@@ -18,7 +20,13 @@ Lets you exercise every layer from the terminal without opening Streamlit:
 import argparse
 import sys
 
-from backend.ingestion import fetch_series, list_metrics, metric_label, snapshot_local_metrics
+from backend.ingestion import (
+    DEFAULT_CSV_PATH,
+    fetch_series,
+    list_metrics,
+    metric_label,
+    snapshot_local_metrics,
+)
 from backend.ingestion.local_pc import collect_local_metrics, fetch_remote_metrics
 from backend.ml import detect_anomalies, format_minutes, predict_utilization_trend, summarize
 from backend.storage import clear_alerts, count_alerts, get_recent_alerts, init_db, insert_alerts
@@ -26,7 +34,11 @@ from backend.storage import clear_alerts, count_alerts, get_recent_alerts, init_
 
 # ----------------------------------------------------------------- helpers
 def add_source_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--source", choices=["local", "aws", "demo", "remote"], default="demo")
+    parser.add_argument(
+        "--source",
+        choices=["local", "aws", "demo", "remote", "kaggle"],
+        default="demo",
+    )
     parser.add_argument("--metric", default=None, help="metric name (see: debug.py metrics)")
     parser.add_argument("--region", default="ap-south-1")
     parser.add_argument("--instance", default="", help="EC2 instance id (aws source)")
@@ -36,6 +48,8 @@ def add_source_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--period", type=int, default=300, help="seconds per datapoint (aws/demo)")
     parser.add_argument("--duration", type=float, default=15, help="sampling seconds (local/remote)")
     parser.add_argument("--interval", type=float, default=0.5, help="sampling gap seconds (local/remote)")
+    parser.add_argument("--csv", default=DEFAULT_CSV_PATH, help="CSV path (kaggle source)")
+    parser.add_argument("--limit", type=int, default=100, help="rows to read (kaggle source)")
 
 
 def source_opts(args: argparse.Namespace) -> dict:
@@ -48,6 +62,8 @@ def source_opts(args: argparse.Namespace) -> dict:
         "period": args.period,
         "duration": args.duration,
         "interval": args.interval,
+        "csv_path": args.csv,
+        "limit": args.limit,
     }
 
 
@@ -60,7 +76,7 @@ def resolve_metric(args: argparse.Namespace) -> str:
 def fetch_or_exit(source: str, metric: str, opts: dict) -> list:
     try:
         return fetch_series(source, metric, **opts)
-    except (RuntimeError, ValueError) as exc:
+    except (RuntimeError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(1)
 
@@ -89,7 +105,7 @@ def print_series_summary(series: dict) -> None:
 
 # ---------------------------------------------------------------- commands
 def cmd_metrics(_args) -> None:
-    for source in ["local", "demo", "aws"]:
+    for source in ["local", "demo", "aws", "kaggle"]:
         print(f"{source:<8} {', '.join(list_metrics(source))}")
     print(f"{'remote':<8} {', '.join(list_metrics('remote'))} (defaults, needs a live agent)")
 
@@ -145,6 +161,19 @@ def cmd_demo(args) -> None:
     points = fetch_or_exit("demo", metric, {"hours": args.hours, "period": args.period})
     print(f"== {metric_label(metric)} ==")
     print_points(points)
+
+
+def cmd_kaggle(args) -> None:
+    metric = args.metric or "cpu"
+    points = fetch_or_exit(
+        "kaggle", metric, {"csv_path": args.csv, "limit": args.limit}
+    )
+    print(f"== {metric_label(metric)} | {args.csv} | {len(points)} row(s) ==")
+    print_points(points, limit=max(args.limit, 15))
+    values = [p["value"] for p in points]
+    print(
+        f"min/avg/max: {min(values):.2f} / {sum(values) / len(values):.2f} / {max(values):.2f}"
+    )
 
 
 def cmd_anomaly(args) -> None:
@@ -263,6 +292,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--hours", type=int, default=6)
     p.add_argument("--period", type=int, default=300)
     p.set_defaults(func=cmd_demo)
+
+    p = sub.add_parser("kaggle", help="read from the Kaggle vmCloud CSV")
+    p.add_argument("--csv", default=DEFAULT_CSV_PATH, help="path to vmCloud_data.csv")
+    p.add_argument("--metric", default="cpu", help="cpu | ram | network")
+    p.add_argument("--limit", type=int, default=100, help="most recent rows to return")
+    p.set_defaults(func=cmd_kaggle)
 
     p = sub.add_parser("anomaly", help="run the Isolation Forest detector")
     add_source_options(p)

@@ -1,3 +1,4 @@
+import os
 import platform
 from datetime import datetime, timedelta
 
@@ -30,6 +31,7 @@ SOURCE_LABELS = {
     "Local PC": "local",
     "AWS (Live)": "aws",
     "Demo": "demo",
+    "Kaggle Dataset (CSV)": "kaggle",
     "Remote PC (HTTP)": "remote",
 }
 
@@ -51,6 +53,8 @@ def target_label(source: str, opts: dict) -> str:
         return f"{opts.get('host')}:{opts.get('port')}"
     if source == "aws":
         return opts.get("instance_id", "")
+    if source == "kaggle":
+        return os.path.basename(str(opts.get("csv_path", "vmCloud_data.csv")))
     return "demo-sim"
 
 
@@ -72,6 +76,13 @@ elif source == "remote":
     st.sidebar.caption(
         "Run `python -m backend.ingestion.agent` on the other PC first."
     )
+elif source == "kaggle":
+    opts["csv_path"] = st.sidebar.text_input("CSV path", "vmCloud_data.csv")
+    opts["limit"] = int(st.sidebar.number_input("Rows to read", 10, 5000, 100, step=50))
+    st.sidebar.caption(
+        "Reads cpu_usage / memory_usage / network_traffic from the Kaggle "
+        "vmCloud CSV. Missing values are skipped."
+    )
 elif source == "aws":
     opts["region"] = st.sidebar.text_input("AWS Region", "ap-south-1")
     instances = cached_instances(opts["region"])
@@ -81,7 +92,7 @@ elif source == "aws":
         opts["instance_id"] = st.sidebar.text_input("Instance ID", "i-0123456789abcdef0")
     opts["hours"] = st.sidebar.number_input("Lookback (hours)", 1, 48, 6)
     opts["period"] = st.sidebar.selectbox("Period (s)", [60, 300, 900], index=1)
-else:
+elif source == "demo":
     opts["hours"] = st.sidebar.number_input("Lookback (hours)", 1, 48, 6)
     opts["period"] = st.sidebar.selectbox("Period (s)", [60, 300, 900], index=1)
     st.sidebar.caption("Generated locally: spiky CPU, leaking RAM, bursty network.")
@@ -174,8 +185,9 @@ def show_prediction(pred):
 # ------------------------------------------------------------------ header
 st.title("Cloud Performance Monitor - Mini Project")
 st.caption(
-    "Metrics from psutil / AWS CloudWatch / demo data, anomaly detection with a "
-    "scikit-learn Isolation Forest, linear-regression trend prediction, alerts in SQLite."
+    "Metrics from psutil / AWS CloudWatch / demo data / Kaggle vmCloud CSV, "
+    "anomaly detection with a scikit-learn Isolation Forest, linear-regression "
+    "trend prediction, alerts in SQLite."
 )
 
 
@@ -188,7 +200,7 @@ if run:
         with progress:
             try:
                 points = fetch_series(source, metric, **opts)
-            except (RuntimeError, ValueError) as exc:
+            except (RuntimeError, ValueError, OSError) as exc:
                 st.error(str(exc))
                 points = []
 

@@ -4,6 +4,8 @@ __pycache__/
 .pytest_cache/
 cloud_monitor.db
 
-# local archives / separate mini-project (own git repo, 4.5GB with torch venv)
+# local archives / datasets / separate mini-project (own git repo, 4.5GB with torch venv)
 *.rar
+*.zip
+vmCloud_data.csv
 tp/
