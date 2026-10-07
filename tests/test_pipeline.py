@@ -1,8 +1,7 @@
 import numpy as np
 
-from backend.ingestion.demo_data import get_demo_metrics
-from backend.ml.anomaly import detect_anomalies, summarize
-from backend.ml.predictor import format_minutes, predict_utilization_trend
+from backend.ingestion.datasets import get_demo_metrics
+from backend.ml import detect_anomalies, format_minutes, predict_utilization_trend, summarize
 from backend.storage import clear_alerts, count_alerts, get_recent_alerts, init_db, insert_alerts
 
 
@@ -81,6 +80,16 @@ def test_summarize_counts():
     assert stats["max"] >= stats["min"]
 
 
+def test_summarize_keeps_full_precision_for_absolute_metrics():
+    points = [
+        {"timestamp": p["timestamp"], "value": 403.0448124670642}
+        for p in get_demo_metrics()["cpu"]
+    ]
+    stats = summarize(detect_anomalies(points))
+    assert stats["min"] == 403.0448124670642
+    assert stats["max"] == 403.0448124670642
+
+
 # --------------------------------------------------------------- predictor
 def _series(formula, count=60, step_s=60):
     from datetime import datetime, timedelta, timezone
@@ -126,6 +135,35 @@ def test_predictor_needs_enough_points():
     pred = predict_utilization_trend(_series(lambda t: 20 + t, count=5))
     assert not pred["supported"]
     assert "at least" in pred["reason"]
+
+
+def test_predictor_bypasses_non_percentage_metrics():
+    # a rising "power" series must NOT produce a 90% ETA - only anomalies/min/max do
+    pred = predict_utilization_trend(_series(lambda t: 200 + 5 * t), metric="power")
+    assert not pred["supported"]
+    assert "not a percentage metric" in pred["reason"]
+    assert pred["eta"] is None
+    assert pred["slope_per_min"] is None
+
+    for metric in ("instructions", "execution_time", "network", "NetworkIn"):
+        pred = predict_utilization_trend(_series(lambda t: 200 + 5 * t), metric=metric)
+        assert not pred["supported"], metric
+
+    # percentage metrics still run
+    pred = predict_utilization_trend(_series(lambda t: 20 + 0.5 * t), metric="cpu")
+    assert pred["supported"]
+
+
+def test_anomaly_scores_work_for_absolute_metrics():
+    # steady 400 W baseline with one extreme spike - Isolation Forest must
+    # flag it and still produce min/max stats in Watts
+    points = _series(lambda t: 400 + (500 if t == 55 else 0), count=60)
+    results = detect_anomalies(points)
+    stats = summarize(results)
+    assert stats["min"] == 400
+    assert stats["max"] == 900
+    assert any(r["is_anomaly"] for r in results)
+    assert all(isinstance(r["score"], float) for r in results)
 
 
 def test_format_minutes():

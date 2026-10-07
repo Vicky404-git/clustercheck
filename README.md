@@ -1,34 +1,36 @@
 # Cloud Performance Monitor - Mini Project
 
-Monitors machine utilisation from three sources (local PC, AWS CloudWatch, demo
-data), flags unusual spikes with a scikit-learn **Isolation Forest**, predicts
-**time until 90% utilisation** with a linear regression, and logs every alert to
+Monitors machine utilisation from five sources (local PC, remote PC, AWS
+CloudWatch, demo data, Kaggle VM dataset), flags unusual spikes with a
+scikit-learn **Isolation Forest**, predicts **time until 90% utilisation**
+with a linear regression on percentage metrics only, and logs every alert to
 a local **SQLite** database. UI is **Streamlit**, plus a pure-CLI `debug.py`.
+
+Every metric is displayed with its real unit - percentages (`%`), but also
+the Kaggle dataset's absolute values: power (`W`), executed instructions
+(`ops`), execution time (`ms`) and network throughput (`bytes/sec`).
 
 ## Team structure (separation of concerns)
 
 | Part | Owner | Files |
 |------|-------|-------|
 | UI / CLI | Person A | `app.py` (Streamlit), `debug.py` (CLI) |
-| Data ingestion | Person B | `backend/ingestion/` - `local_pc.py` (psutil + GPUtil), `agent.py` (HTTP agent), `aws_ingestion.py` (boto3), `demo_data.py`, `kaggle.py` (Kaggle CSV) |
-| ML engine + DB | Person C | `backend/ml/` - `anomaly.py`, `predictor.py`; `backend/storage/database.py` |
+| Data ingestion + metric registry | Person B | `backend/ingestion/` - `local_pc.py` (psutil + HTTP agent), `aws_ingestion.py` (boto3), `datasets.py` (demo + Kaggle CSV), `__init__.py` (source dispatcher + unit registry) |
+| ML engine + DB | Person C | `backend/ml.py` (Isolation Forest + regression), `backend/storage.py` (SQLite) |
 
 ```
 .
 ├── app.py                     # Streamlit UI (Person A)
 ├── debug.py                   # CLI to test every function (Person A)
 ├── backend/
+│   ├── __init__.py
 │   ├── ingestion/             # Person B
-│   │   ├── local_pc.py        # psutil: CPU, RAM, Disk, Network, GPU (GPUtil)
-│   │   ├── agent.py           # HTTP endpoint to expose a PC to the network
+│   │   ├── __init__.py        # source dispatcher + metric name/unit registry
+│   │   ├── local_pc.py        # psutil collector + HTTP agent for remote PCs
 │   │   ├── aws_ingestion.py   # boto3 CloudWatch (plug credentials later)
-│   │   ├── demo_data.py       # spiky CPU, leaking RAM, bursty network
-│   │   └── kaggle.py          # vmCloud_data.csv reader (CPU/RAM/Network)
-│   ├── ml/                    # Person C
-│   │   ├── anomaly.py         # Isolation Forest (in-memory, no joblib)
-│   │   └── predictor.py       # linear regression -> time until 90%
-│   └── storage/               # Person C
-│       └── database.py        # SQLite alerts table
+│   │   └── datasets.py        # demo generator + Kaggle vmCloud CSV reader
+│   ├── ml.py                  # Person C: Isolation Forest + linear regression
+│   └── storage.py             # Person C: SQLite alerts table
 ├── tests/                     # offline tests (no AWS needed)
 ├── requirements.txt
 └── cloud_monitor.db           # created automatically
@@ -72,7 +74,7 @@ hardware/driver exists (otherwise the GPU metric is simply hidden).
 **Remote PC** - on the other machine run:
 
 ```bash
-python -m backend.ingestion.agent --port 8777
+python -m backend.ingestion.local_pc --port 8777
 ```
 
 then in the UI choose `Remote PC (HTTP)` and enter that machine's IP. The
@@ -90,33 +92,60 @@ variables. IAM needs `cloudwatch:GetMetricStatistics` (and
 - RAM: slow upward leak
 - Network In/Out: bursty, mostly quiet with sudden multipliers
 
-**Kaggle Dataset (CSV)** - `backend/ingestion/kaggle.py` reads the Kaggle
+**Kaggle Dataset (CSV)** - `backend/ingestion/datasets.py` reads the Kaggle
 *VM Workload* dataset (`vmCloud_data.csv`, ~2M rows, gitignored) from the
-project root. Metrics map to `cpu_usage`, `memory_usage` and
-`network_traffic`; timestamps are parsed, null values and bad rows are
-dropped, then the rows are sorted chronologically and the most recent N are
-returned (the sidebar sets the row count, default 100). The file can also be
-placed anywhere - the sidebar takes a custom CSV path.
+project root. Six metrics are exposed with their real units:
+
+| pipeline metric | CSV column | unit |
+|-----------------|------------|------|
+| `cpu` | `cpu_usage` | % |
+| `ram` | `memory_usage` | % |
+| `network` | `network_traffic` | bytes/sec |
+| `power` | `power_consumption` | W |
+| `instructions` | `num_executed_instructions` | ops |
+| `execution_time` | `execution_time` | ms |
+
+Timestamps are parsed, null values and bad rows are dropped, then the rows
+are sorted chronologically and the most recent N are returned (the sidebar
+sets the row count, default 100). The file can also be placed anywhere - the
+sidebar takes a custom CSV path.
+
+## Metric units
+
+`METRIC_SPECS` in `backend/ingestion/__init__.py` is the single source of
+truth for every metric's name and unit. Both the Streamlit metric cards and
+every `debug.py` table read it from there, so units are shown consistently
+everywhere. Values are displayed at full useful precision (integers with
+thousands separators, fractions up to 6 decimals, never scientific
+notation), so absolute metrics are not rounded away.
 
 ## ML
 
-- **Anomaly detection** (`backend/ml/anomaly.py`): Isolation Forest trained
+- **Anomaly detection** (`backend/ml.py`): Isolation Forest trained
   **in-memory on every call** and discarded - no joblib, no model file on disk.
-  Roughly the most unusual 5% of points are flagged and written to SQLite.
-- **Trend prediction** (`backend/ml/predictor.py`): linear regression over the
-  recent history of a 0-100% metric, returning the slope, R2 and an ETA for
-  crossing 90% utilisation (or "not projected" when the trend is falling).
+  Roughly the most unusual 5% of points are flagged, their anomaly scores are
+  shown in the UI/CLI for *every* metric (Watts, ops, ms included), and the
+  flagged rows are written to SQLite. Min/avg/max stats likewise work for all
+  metrics.
+- **Trend prediction** (`backend/ml.py`): linear regression over the recent
+  history of a **percentage** metric (CPU/RAM/Disk/GPU), returning the slope,
+  R2 and an ETA for crossing 90% utilisation (or "not projected" when the
+  trend is falling). Non-percentage metrics are safely bypassed: the
+  predictor reports `supported: false` with a reason instead of inventing an
+  ETA for Watts or instructions.
 
 ## CLI testing (no UI needed)
 
 ```bash
-python debug.py metrics                          # metrics per source
+python debug.py metrics                          # metrics per source, with units
 python debug.py local --duration 10              # psutil snapshot + series
 python debug.py remote --host 192.168.1.50       # poll a friend's PC
 python debug.py aws --instance i-0123456789abcdef0
 python debug.py demo --metric cpu --hours 6
-python debug.py kaggle --metric cpu --limit 100   # read vmCloud_data.csv
-python debug.py anomaly --source kaggle --metric cpu --save
+python debug.py kaggle --metric power --limit 100      # Watts from the CSV
+python debug.py kaggle --metric instructions --limit 50 # ops from the CSV
+python debug.py anomaly --source kaggle --metric power --save  # scores in W
+python debug.py predict --source kaggle --metric power # bypass: not a %
 python debug.py predict --source demo --metric ram
 python debug.py db-test                          # insert + read back
 python debug.py db-show --limit 10

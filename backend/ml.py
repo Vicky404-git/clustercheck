@@ -1,19 +1,77 @@
-"""Simple trend prediction (Person C).
+"""ML engine (Person C).
 
-Fits an ordinary least squares line (scikit-learn LinearRegression) over the
-recent history of a utilisation metric and estimates when it will cross a
-threshold (default 90%). Also trained in-memory, nothing is persisted.
+Two in-memory scikit-learn models, nothing persisted (no joblib, no model
+file on disk):
+
+- anomaly detection: Isolation Forest flagging unusual values in any series
+- trend prediction: linear regression estimating when a *percentage*
+  utilisation metric will cross 90%
+
+The percentage-metric registry lives in the ingestion layer (single source
+of truth for metric names/units) and is what lets the predictor safely
+bypass absolute metrics such as Watts, ops or ms.
 """
 
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+import pandas as pd
+from sklearn.ensemble import IsolationForest
 from sklearn.linear_model import LinearRegression
 
+from .ingestion import PCT_METRICS
+
+MIN_POINTS_TO_TRAIN = 20
 MIN_POINTS_TO_PREDICT = 10
 
 
+# ======================================================================
+# anomaly detection - Isolation Forest
+# ======================================================================
+def detect_anomalies(points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Flag unusual values in a metric series. Returns copies of the input dicts."""
+    if len(points) < MIN_POINTS_TO_TRAIN:
+        return [dict(p, is_anomaly=False, score=0.0) for p in points]
+
+    df = pd.DataFrame(points)
+    values = df["value"].to_numpy()
+
+    # a perfectly flat series (e.g. idle disk) has nothing to flag
+    if float(np.ptp(values)) == 0.0:
+        return [dict(p, is_anomaly=False, score=0.0) for p in points]
+
+    model = IsolationForest(
+        n_estimators=100,
+        contamination=0.05,
+        random_state=42,
+    )
+    labels = model.fit_predict(values.reshape(-1, 1))
+    scores = model.decision_function(values.reshape(-1, 1))
+
+    return [
+        dict(point, is_anomaly=bool(label == -1), score=round(float(score), 4))
+        for point, label, score in zip(points, labels, scores)
+    ]
+
+
+def summarize(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Min/avg/max stats for any metric. Values are kept at full precision;
+    the UI/CLI decide how to round for display."""
+    values = np.array([r["value"] for r in results], dtype=float)
+    anomalies = [r for r in results if r["is_anomaly"]]
+    return {
+        "points": len(results),
+        "anomalies": len(anomalies),
+        "min": float(values.min()) if len(values) else 0.0,
+        "max": float(values.max()) if len(values) else 0.0,
+        "avg": float(values.mean()) if len(values) else 0.0,
+    }
+
+
+# ======================================================================
+# trend prediction - linear regression
+# ======================================================================
 def predict_utilization_trend(
     points: List[Dict[str, Any]],
     threshold: float = 90.0,
@@ -22,8 +80,8 @@ def predict_utilization_trend(
 ) -> Dict[str, Any]:
     """Linear-regression trend for a 0-100 utilisation metric.
 
-    Returns a dict with slope/eta fields; `supported` is False when there is
-    not enough data to fit a line.
+    Returns a dict with slope/eta fields; `supported` is False when the metric
+    is not a percentage (e.g. power in W) or there is not enough data.
     """
     result: Dict[str, Any] = {
         "supported": False,
@@ -38,6 +96,13 @@ def predict_utilization_trend(
         "minutes_to_threshold": None,
         "eta": None,
     }
+
+    if metric not in PCT_METRICS:
+        result["reason"] = (
+            f"'{metric}' is not a percentage metric - trend prediction "
+            "only applies to 0-100% utilisation (CPU/RAM/Disk/GPU)"
+        )
+        return result
 
     if len(points) < min_points:
         result["reason"] = f"need at least {min_points} points, got {len(points)}"

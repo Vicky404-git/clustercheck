@@ -23,8 +23,10 @@ import sys
 from backend.ingestion import (
     DEFAULT_CSV_PATH,
     fetch_series,
+    format_value,
     list_metrics,
     metric_label,
+    metric_unit,
     snapshot_local_metrics,
 )
 from backend.ingestion.local_pc import collect_local_metrics, fetch_remote_metrics
@@ -81,33 +83,40 @@ def fetch_or_exit(source: str, metric: str, opts: dict) -> list:
         sys.exit(1)
 
 
-def print_points(points: list, limit: int = 15) -> None:
-    print(f"{'#':>4}  {'timestamp':<32} {'value':>14}")
-    print("-" * 52)
+def print_points(points: list, metric: str = None, limit: int = 15) -> None:
+    """Table of raw points; the value column header carries the metric unit."""
+    unit = metric_unit(metric) if metric else ""
+    header = f"value ({unit})" if unit else "value"
+    print(f"{'#':>4}  {'timestamp':<32} {header:>22}")
+    print("-" * 62)
     for i, p in enumerate(points[:limit], 1):
-        print(f"{i:>4}  {str(p['timestamp']):<32} {float(p['value']):>14.2f}")
+        print(f"{i:>4}  {str(p['timestamp']):<32} {format_value(p['value']):>22}")
     if len(points) > limit:
         print(f"... {len(points) - limit} more rows (total {len(points)})")
 
 
 def print_series_summary(series: dict) -> None:
-    print(f"{'metric':<16} {'points':>7} {'min':>12} {'max':>12} {'avg':>12}")
-    print("-" * 62)
+    print(f"{'metric':<26} {'points':>7} {'min':>16} {'max':>16} {'avg':>16}")
+    print("-" * 84)
     for name, points in series.items():
         if not points:
             continue
         values = [float(p["value"]) for p in points]
         print(
-            f"{name:<16} {len(points):>7} {min(values):>12.2f} "
-            f"{max(values):>12.2f} {sum(values) / len(values):>12.2f}"
+            f"{metric_label(name):<26} {len(points):>7} "
+            f"{format_value(min(values)):>16} "
+            f"{format_value(max(values)):>16} "
+            f"{format_value(sum(values) / len(values)):>16}"
         )
 
 
 # ---------------------------------------------------------------- commands
 def cmd_metrics(_args) -> None:
     for source in ["local", "demo", "aws", "kaggle"]:
-        print(f"{source:<8} {', '.join(list_metrics(source))}")
-    print(f"{'remote':<8} {', '.join(list_metrics('remote'))} (defaults, needs a live agent)")
+        labels = ", ".join(metric_label(m) for m in list_metrics(source))
+        print(f"{source:<8} {labels}")
+    remote = ", ".join(metric_label(m) for m in list_metrics("remote"))
+    print(f"{'remote':<8} {remote} (defaults, needs a live agent)")
 
 
 def cmd_local(args) -> None:
@@ -117,7 +126,7 @@ def cmd_local(args) -> None:
     print(f"time     : {snap['timestamp']}")
     for key in ("cpu", "ram", "disk", "gpu"):
         value = snap.get(key)
-        print(f"{key:<8} : {value if value is not None else 'no GPU detected'}")
+        print(f"{key:<8} : {format_value(value, key) if value is not None else 'no GPU detected'}")
 
     if args.duration > 0:
         print(f"\n== collected over {args.duration}s (interval {args.interval}s) ==")
@@ -125,7 +134,7 @@ def cmd_local(args) -> None:
         print_series_summary(series)
         if args.metric and args.metric in series:
             print(f"\n== {metric_label(args.metric)} ==")
-            print_points(series[args.metric])
+            print_points(series[args.metric], metric=args.metric)
 
 
 def cmd_remote(args) -> None:
@@ -140,7 +149,7 @@ def cmd_remote(args) -> None:
     print_series_summary(series)
     if args.metric and args.metric in series:
         print(f"\n== {metric_label(args.metric)} ==")
-        print_points(series[args.metric])
+        print_points(series[args.metric], metric=args.metric)
 
 
 def cmd_aws(args) -> None:
@@ -153,14 +162,14 @@ def cmd_aws(args) -> None:
     }
     points = fetch_or_exit("aws", metric, opts)
     print(f"== {metric_label(metric)} | {args.instance} | {args.region} ==")
-    print_points(points, limit=20)
+    print_points(points, metric=metric, limit=20)
 
 
 def cmd_demo(args) -> None:
     metric = args.metric or "cpu"
     points = fetch_or_exit("demo", metric, {"hours": args.hours, "period": args.period})
     print(f"== {metric_label(metric)} ==")
-    print_points(points)
+    print_points(points, metric=metric)
 
 
 def cmd_kaggle(args) -> None:
@@ -169,10 +178,13 @@ def cmd_kaggle(args) -> None:
         "kaggle", metric, {"csv_path": args.csv, "limit": args.limit}
     )
     print(f"== {metric_label(metric)} | {args.csv} | {len(points)} row(s) ==")
-    print_points(points, limit=max(args.limit, 15))
+    print_points(points, metric=metric, limit=max(args.limit, 15))
     values = [p["value"] for p in points]
     print(
-        f"min/avg/max: {min(values):.2f} / {sum(values) / len(values):.2f} / {max(values):.2f}"
+        "min/avg/max: "
+        f"{format_value(min(values), metric)} / "
+        f"{format_value(sum(values) / len(values), metric)} / "
+        f"{format_value(max(values), metric)}"
     )
 
 
@@ -184,14 +196,24 @@ def cmd_anomaly(args) -> None:
     print(f"== anomaly detection ({args.source} / {metric_label(metric)}) ==")
     print(f"points   : {stats['points']}")
     print(f"anomalies: {stats['anomalies']}")
-    print(f"min/avg/max: {stats['min']} / {stats['avg']} / {stats['max']}")
+    print(
+        "min/avg/max: "
+        f"{format_value(stats['min'], metric)} / "
+        f"{format_value(stats['avg'], metric)} / "
+        f"{format_value(stats['max'], metric)}"
+    )
 
     flagged = [r for r in results if r["is_anomaly"]]
     if flagged:
-        print(f"\n{'timestamp':<32} {'value':>12} {'score':>10}")
-        print("-" * 56)
+        unit = metric_unit(metric)
+        value_header = f"value ({unit})" if unit else "value"
+        print(f"\n{'timestamp':<32} {value_header:>20} {'score':>10}")
+        print("-" * 64)
         for row in flagged:
-            print(f"{str(row['timestamp']):<32} {float(row['value']):>12.2f} {row['score']:>10}")
+            print(
+                f"{str(row['timestamp']):<32} "
+                f"{format_value(row['value']):>20} {row['score']:>10}"
+            )
 
     if args.save:
         init_db()
@@ -205,12 +227,13 @@ def cmd_anomaly(args) -> None:
 def cmd_predict(args) -> None:
     metric = resolve_metric(args)
     points = fetch_or_exit(args.source, metric, source_opts(args))
+    # the predictor itself bypasses non-percentage metrics (W, ops, ms, ...)
     pred = predict_utilization_trend(points, threshold=90.0, metric=metric)
     print(f"== trend prediction ({args.source} / {metric_label(metric)}) ==")
     if not pred["supported"]:
         print(f"not supported: {pred['reason']}")
         return
-    print(f"current  : {pred['current']} %")
+    print(f"current  : {format_value(pred['current'], metric)}")
     print(f"trend    : {pred['direction']} ({pred['slope_per_min']} %/min, R2={pred['r2']})")
     if pred["minutes_to_threshold"] is None:
         print("time to 90%: not projected (trend is not rising)")
@@ -238,12 +261,12 @@ def cmd_db_show(args) -> None:
     if not rows:
         print("alerts table is empty")
         return
-    print(f"{'id':>4} {'source':<7} {'target':<20} {'metric':<8} {'value':>10} {'timestamp':<32}")
-    print("-" * 88)
+    print(f"{'id':>4} {'source':<7} {'target':<20} {'metric':<8} {'value':>18} {'timestamp':<32}")
+    print("-" * 96)
     for row in rows:
         print(
             f"{row['id']:>4} {row['source']:<7} {row['target']:<20} {row['metric']:<8} "
-            f"{row['value']:>10.2f} {row['timestamp']:<32}"
+            f"{format_value(row['value'], row['metric']):>18} {row['timestamp']:<32}"
         )
 
 
@@ -295,7 +318,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("kaggle", help="read from the Kaggle vmCloud CSV")
     p.add_argument("--csv", default=DEFAULT_CSV_PATH, help="path to vmCloud_data.csv")
-    p.add_argument("--metric", default="cpu", help="cpu | ram | network")
+    p.add_argument(
+        "--metric",
+        default="cpu",
+        help="cpu | ram | network | power | instructions | execution_time",
+    )
     p.add_argument("--limit", type=int, default=100, help="most recent rows to return")
     p.set_defaults(func=cmd_kaggle)
 

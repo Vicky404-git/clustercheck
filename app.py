@@ -11,10 +11,12 @@ import streamlit as st
 from backend.ingestion import (
     PCT_METRICS,
     fetch_series,
+    format_value,
     list_instances,
     list_metrics,
     list_remote_metrics,
     metric_label,
+    metric_unit,
 )
 from backend.ml import detect_anomalies, format_minutes, predict_utilization_trend, summarize
 from backend.storage import count_alerts, get_recent_alerts, init_db, insert_alerts
@@ -74,14 +76,16 @@ elif source == "remote":
     opts["duration"] = st.sidebar.slider("Sampling duration (s)", 10, 60, 30, step=5)
     opts["interval"] = 0.5
     st.sidebar.caption(
-        "Run `python -m backend.ingestion.agent` on the other PC first."
+        "Run `python -m backend.ingestion.local_pc --port 8777` on the other "
+        "PC first."
     )
 elif source == "kaggle":
     opts["csv_path"] = st.sidebar.text_input("CSV path", "vmCloud_data.csv")
     opts["limit"] = int(st.sidebar.number_input("Rows to read", 10, 5000, 100, step=50))
     st.sidebar.caption(
-        "Reads cpu_usage / memory_usage / network_traffic from the Kaggle "
-        "vmCloud CSV. Missing values are skipped."
+        "Reads cpu %, ram %, network bytes/sec, power W, instructions ops and "
+        "execution time ms from the Kaggle vmCloud CSV. Missing values are "
+        "skipped."
     )
 elif source == "aws":
     opts["region"] = st.sidebar.text_input("AWS Region", "ap-south-1")
@@ -207,11 +211,9 @@ if run:
         if points:
             results = detect_anomalies(points)
             stats = summarize(results)
-            pred = (
-                predict_utilization_trend(results, threshold=THRESHOLD, metric=metric)
-                if metric in PCT_METRICS
-                else None
-            )
+            # the predictor itself bypasses non-percentage metrics (W, ops, ms)
+            # and returns supported=False with a reason instead of a bogus ETA
+            pred = predict_utilization_trend(results, threshold=THRESHOLD, metric=metric)
             target = target_label(source, opts)
             saved = insert_alerts(results, source=source, target=target, metric=metric)
             st.session_state.update(
@@ -231,22 +233,42 @@ if run:
 # ---------------------------------------------------------------- results
 if "results" in st.session_state:
     stats = st.session_state["stats"]
-    c1, c2, c3, c4 = st.columns(4)
+    run_metric = st.session_state["metric"]
+    unit = metric_unit(run_metric)
+    unit_suffix = f" ({unit})" if unit else ""
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Data points", stats["points"])
     c2.metric("Anomalies flagged", stats["anomalies"])
-    c3.metric("Max value", stats["max"])
-    c4.metric("Alerts written to DB", st.session_state["saved"])
+    c3.metric(f"Min value{unit_suffix}", format_value(stats["min"]))
+    c4.metric(f"Avg value{unit_suffix}", format_value(stats["avg"]))
+    c5.metric(f"Max value{unit_suffix}", format_value(stats["max"]))
+    c6.metric("Alerts written to DB", st.session_state["saved"])
 
     st.caption("Last run: " + st.session_state["run_label"])
     st.pyplot(
         plot_metric(
             st.session_state["results"],
-            metric_label(st.session_state["metric"]),
+            metric_label(run_metric),
             st.session_state.get("pred"),
-            THRESHOLD if st.session_state["metric"] in PCT_METRICS else None,
+            THRESHOLD if run_metric in PCT_METRICS else None,
             st.session_state["target"],
         )
     )
+
+    flagged = [r for r in st.session_state["results"] if r["is_anomaly"]]
+    if flagged:
+        st.markdown("**Anomaly scores (Isolation Forest) for flagged points**")
+        frame = pd.DataFrame(
+            {
+                "timestamp": [str(r["timestamp"]) for r in flagged],
+                "value": [r["value"] for r in flagged],
+                "score": [r["score"] for r in flagged],
+            }
+        )
+        if unit:
+            frame = frame.rename(columns={"value": f"value ({unit})"})
+        st.dataframe(frame, width="stretch", hide_index=True)
 
     if st.session_state.get("pred"):
         st.markdown("**ML trend prediction (linear regression)**")
@@ -261,10 +283,13 @@ else:
 st.subheader("Recent Alerts (from cloud_monitor.db)")
 rows = get_recent_alerts(limit=50)
 if rows:
-    st.dataframe(pd.DataFrame([dict(r) for r in rows]), width="stretch", hide_index=True)
+    alert_frame = pd.DataFrame([dict(r) for r in rows])
+    alert_frame["metric"] = alert_frame["metric"].map(metric_label)
+    st.dataframe(alert_frame, width="stretch", hide_index=True)
     st.caption(
         "Query: SELECT id, source, target, metric, timestamp, value, score, "
-        "created_at FROM alerts ORDER BY id DESC LIMIT 50"
+        "created_at FROM alerts ORDER BY id DESC LIMIT 50 - metric column "
+        "shows name and unit (e.g. Power Consumption (W))"
     )
 else:
     st.write("No alerts recorded yet.")

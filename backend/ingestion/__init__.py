@@ -1,19 +1,29 @@
-"""Data ingestion layer (Person B).
+"""Data ingestion layer (Person B) + the shared metric registry.
 
 Five interchangeable sources, all returning the same series shape:
 
     {"timestamp": datetime, "value": float}
 
-- local  : psutil readings from this machine
-- remote : HTTP polling of another machine running backend.ingestion.agent
-- aws    : CloudWatch metrics via boto3
-- demo   : deterministic fake data (see demo_data.py)
-- kaggle : vmCloud_data.csv from the Kaggle dataset (see kaggle.py)
+- local  : psutil readings from this machine (local_pc.py, which also hosts
+           the HTTP agent used by the remote source)
+- remote : HTTP polling of another machine running that agent
+- aws    : CloudWatch metrics via boto3 (aws_ingestion.py)
+- demo   : deterministic fake data (datasets.py)
+- kaggle : vmCloud_data.csv from the Kaggle dataset (datasets.py)
+
+METRIC_SPECS below is the single source of truth for every metric's human
+name and unit. app.py, debug.py and the ML predictor all read it from here,
+so units are never duplicated or forgotten.
 """
 
 from .aws_ingestion import AWS_METRIC_NAMES, fetch_metric, list_instances
-from .demo_data import DEMO_METRICS, get_demo_metrics
-from .kaggle import DEFAULT_CSV_PATH, KAGGLE_METRICS, fetch_kaggle_series
+from .datasets import (
+    DEFAULT_CSV_PATH,
+    DEMO_METRICS,
+    KAGGLE_METRICS,
+    fetch_kaggle_series,
+    get_demo_metrics,
+)
 from .local_pc import (
     BASE_METRICS,
     available_local_metrics,
@@ -25,25 +35,63 @@ from .local_pc import (
 
 SOURCES = ["local", "aws", "demo", "remote", "kaggle"]
 
-METRIC_LABELS = {
-    "cpu": "CPU Utilization (%)",
-    "ram": "Memory Usage (%)",
-    "disk": "Disk Usage (%)",
-    "gpu": "GPU Utilization (%)",
-    "network": "Network Traffic",
-    "network_in": "Network In (bytes/sec)",
-    "network_out": "Network Out (bytes/sec)",
-    "CPUUtilization": "CPUUtilization (%)",
-    "NetworkIn": "NetworkIn (bytes)",
-    "NetworkOut": "NetworkOut (bytes)",
+# metric key -> (human name, unit)
+METRIC_SPECS = {
+    # percentage utilisation - the unit "%" is also what marks a metric as
+    # eligible for the 90% trend prediction (see PCT_METRICS)
+    "cpu": ("CPU Utilization", "%"),
+    "ram": ("Memory Usage", "%"),
+    "disk": ("Disk Usage", "%"),
+    "gpu": ("GPU Utilization", "%"),
+    "CPUUtilization": ("CPUUtilization", "%"),
+    # rates and counters
+    "network": ("Network Traffic", "bytes/sec"),
+    "network_in": ("Network In", "bytes/sec"),
+    "network_out": ("Network Out", "bytes/sec"),
+    "NetworkIn": ("NetworkIn", "bytes"),
+    "NetworkOut": ("NetworkOut", "bytes"),
+    # Kaggle VM Cloud raw metrics (absolute, non-percentage)
+    "power": ("Power Consumption", "W"),
+    "instructions": ("Executed Instructions", "ops"),
+    "execution_time": ("Execution Time", "ms"),
 }
 
-# metrics measured in percent, used for the 90% utilisation prediction
-PCT_METRICS = {"cpu", "ram", "disk", "gpu", "CPUUtilization"}
+# percentage metrics drive the 90% utilisation prediction; everything else
+# (W, ops, ms, bytes/sec) is bypassed there but still gets anomaly detection
+PCT_METRICS = {key for key, (_name, unit) in METRIC_SPECS.items() if unit == "%"}
+
+
+def metric_unit(metric: str) -> str:
+    return METRIC_SPECS.get(metric, (metric, ""))[1]
 
 
 def metric_label(metric: str) -> str:
-    return METRIC_LABELS.get(metric, metric)
+    """'power' -> 'Power Consumption (W)'; unknown keys pass through."""
+    name, unit = METRIC_SPECS.get(metric, (metric, ""))
+    return f"{name} ({unit})" if unit else name
+
+
+def format_value(value, metric: str = None) -> str:
+    """Display a value at full useful precision with its unit.
+
+    Integers keep thousands separators and no decimals ('7,527 ops'),
+    fractional values keep up to 6 decimals and never go scientific
+    ('403.044812 W', '0.064105 ms') - so absolute metrics are never
+    rounded away to look like percentages.
+    """
+    if value is None:
+        return "n/a"
+    number = float(value)
+    if number == int(number) and abs(number) < 1e15:
+        text = f"{int(number):,}"
+    else:
+        text = f"{number:,.6f}".rstrip("0").rstrip(".")
+        if text in {"", ".", "-", "-."}:
+            text = repr(number)
+    if metric is None:
+        return text
+    unit = metric_unit(metric)
+    return f"{text} {unit}".rstrip()
 
 
 def list_metrics(source: str) -> list:
