@@ -14,23 +14,23 @@ the Kaggle dataset's absolute values: power (`W`), executed instructions
 
 | Part | Owner | Files |
 |------|-------|-------|
-| UI / CLI | Person A | `app.py` (Streamlit), `debug.py` (CLI) |
-| Data ingestion + metric registry | Person B | `backend/ingestion/` - `local_pc.py` (psutil + HTTP agent), `aws_ingestion.py` (boto3), `datasets.py` (demo + Kaggle CSV), `__init__.py` (source dispatcher + unit registry) |
-| ML engine + DB | Person C | `backend/ml.py` (Isolation Forest + regression), `backend/storage.py` (SQLite) |
+| UI / CLI |  `app.py` (Streamlit), `debug.py` (CLI) |
+| Data ingestion + metric registry |  `backend/ingestion/` - `local_pc.py` (psutil + HTTP agent), `aws_ingestion.py` (boto3), `datasets.py` (demo + Kaggle CSV), `__init__.py` (source dispatcher + unit registry) |
+| ML engine + DB |  `backend/ml.py` (Isolation Forest + regression), `backend/storage.py` (SQLite) |
 
 ```
 .
-├── app.py                     # Streamlit UI (Person A)
-├── debug.py                   # CLI to test every function (Person A)
+├── app.py                     # Streamlit UI
+├── debug.py                   # CLI to test every function
 ├── backend/
 │   ├── __init__.py
-│   ├── ingestion/             # Person B
+│   ├── ingestion/             #
 │   │   ├── __init__.py        # source dispatcher + metric name/unit registry
 │   │   ├── local_pc.py        # psutil collector + HTTP agent for remote PCs
 │   │   ├── aws_ingestion.py   # boto3 CloudWatch (plug credentials later)
 │   │   └── datasets.py        # demo generator + Kaggle vmCloud CSV reader
-│   ├── ml.py                  # Person C: Isolation Forest + linear regression
-│   └── storage.py             # Person C: SQLite alerts table
+│   ├── ml.py                  # Isolation Forest + linear regression
+│   └── storage.py             # SQLite alerts table
 ├── tests/                     # offline tests (no AWS needed)
 ├── requirements.txt
 └── cloud_monitor.db           # created automatically

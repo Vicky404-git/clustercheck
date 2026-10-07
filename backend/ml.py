@@ -1,4 +1,4 @@
-"""ML engine (Person C).
+"""ML engine .
 
 Two in-memory scikit-learn models, nothing persisted (no joblib, no model
 file on disk):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI debug tool for the Cloud Performance Monitor mini project (Person A).
+"""CLI debug tool for the Cloud Performance Monitor mini project .
 
 Lets you exercise every layer from the terminal without opening Streamlit:
 

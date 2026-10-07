@@ -1,4 +1,4 @@
-"""Data ingestion layer (Person B) + the shared metric registry.
+"""Data ingestion layer  + the shared metric registry.
 
 Five interchangeable sources, all returning the same series shape:
 

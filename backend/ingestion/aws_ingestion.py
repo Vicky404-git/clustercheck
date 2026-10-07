@@ -1,4 +1,4 @@
-"""EC2 metrics from AWS CloudWatch via boto3 (Person B).
+"""EC2 metrics from AWS CloudWatch via boto3 .
 
 Kept separate from the local/psutil collector so credentials can be plugged
 in later without touching the rest of the pipeline.

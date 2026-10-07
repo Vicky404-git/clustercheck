@@ -1,4 +1,4 @@
-"""Offline dataset sources (Person B): generated demo series + Kaggle CSV.
+"""Offline dataset sources : generated demo series + Kaggle CSV.
 
 Both feed the pipeline without network access or hardware access, so they
 live together:

@@ -1,4 +1,4 @@
-"""SQLite storage for detected anomalies (alerts) - Person C.
+"""SQLite storage for detected anomalies (alerts)  .
 
 `source` records where the data came from (local / remote / aws / demo) and
 `target` is whatever machine it describes (hostname, EC2 instance id, ...).

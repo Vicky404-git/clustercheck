@@ -1,5 +1,5 @@
 """Live metrics from this machine, plus the tiny HTTP agent that exposes
-them to other machines on the LAN (Person B).
+them to other machines on the LAN .
 
 Every source ends up producing the same shape of data, so the ML layer and
 the UI never care where the numbers came from:
